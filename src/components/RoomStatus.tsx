@@ -59,7 +59,7 @@ export const RoomStatus: React.FC<RoomStatusProps> = ({
   const [newRoomNumber, setNewRoomNumber] = useState('');
   const [newRoomFloor, setNewRoomFloor] = useState<number>(1);
   const [newRoomType, setNewRoomType] = useState<RoomType>('1 Bedroom');
-  const [newRoomRent, setNewRoomRent] = useState<number>(450000);
+  const [newRoomRent, setNewRoomRent] = useState<number>(1700);
   const [newRoomStatus, setNewRoomStatus] = useState<RoomStatusType>('available');
   const [newTenantName, setNewTenantName] = useState('');
   const [newTenantPhone, setNewTenantPhone] = useState('');
@@ -92,15 +92,29 @@ export const RoomStatus: React.FC<RoomStatusProps> = ({
   }, [rooms]);
 
   // Filtered rooms
+  // Filtered rooms with flexible search
   const filteredRooms = useMemo(() => {
     return rooms.filter((room) => {
-      // Search query matches room number, tenant name, or room type
+      // Search query matches room number, tenant name, phone, or type
       if (searchQuery.trim()) {
         const query = searchQuery.toLowerCase().trim();
-        const matchesRoom = room.roomNumber.toLowerCase().includes(query);
+        // Allow user to type "room 101", "rm 101", "အခန်း 101"
+        const cleanQuery = query.replace(/^(room|rm|အခန်း)\s*/i, '').trim();
+
+        const matchesRoom =
+          room.roomNumber.toLowerCase().includes(query) ||
+          (cleanQuery.length > 0 && room.roomNumber.toLowerCase().includes(cleanQuery));
         const matchesTenant = room.tenantName?.toLowerCase().includes(query) || false;
+        const matchesPhone = room.tenantPhone?.toLowerCase().includes(query) || false;
         const matchesType = room.roomType.toLowerCase().includes(query);
-        if (!matchesRoom && !matchesTenant && !matchesType) return false;
+        const matchesFloor =
+          `floor ${room.floor}`.includes(query) ||
+          `အလွှာ ${room.floor}`.includes(query) ||
+          (cleanQuery.length > 0 && String(room.floor) === cleanQuery);
+
+        if (!matchesRoom && !matchesTenant && !matchesPhone && !matchesType && !matchesFloor) {
+          return false;
+        }
       }
 
       // Status filter
@@ -122,8 +136,8 @@ export const RoomStatus: React.FC<RoomStatusProps> = ({
     });
   }, [rooms, searchQuery, statusFilter, floorFilter, typeFilter]);
 
-  // Helper formatter for MMK currency
-  const formatRent = (amount: number, currency: string = 'MMK') => {
+  // Helper formatter for Baht currency
+  const formatRent = (amount: number, currency: string = 'Baht') => {
     return `${amount.toLocaleString()} ${currency}`;
   };
 
@@ -170,7 +184,7 @@ export const RoomStatus: React.FC<RoomStatusProps> = ({
       floor: Number(newRoomFloor),
       roomType: newRoomType,
       monthlyRent: Number(newRoomRent),
-      currency: 'MMK',
+      currency: 'Baht',
       status: newRoomStatus,
       tenantName: newRoomStatus === 'occupied' && newTenantName.trim() ? newTenantName.trim() : null,
       tenantPhone: newTenantPhone.trim() || undefined,
@@ -187,7 +201,7 @@ export const RoomStatus: React.FC<RoomStatusProps> = ({
 
   // Export room data to simple CSV
   const handleExportCSV = () => {
-    const headers = ['Room Number', 'Floor', 'Room Type', 'Monthly Rent (MMK)', 'Status', 'Tenant Name', 'Phone', 'Notes'];
+    const headers = ['Room Number', 'Floor', 'Room Type', 'Monthly Rent (Baht)', 'Status', 'Tenant Name', 'Phone', 'Notes'];
     const rows = filteredRooms.map((r) => [
       `"${r.roomNumber}"`,
       r.floor,
@@ -314,7 +328,7 @@ export const RoomStatus: React.FC<RoomStatusProps> = ({
             <div className="mt-3 flex items-center justify-between text-xs text-slate-500 pt-3 border-t border-slate-100">
               <span>လက်ရှိလစဉ်ရငွေ</span>
               <span className="font-semibold text-slate-800 font-mono tabular-nums">
-                {currentCollectedRent.toLocaleString()} Ks
+                {currentCollectedRent.toLocaleString()} Baht
               </span>
             </div>
           </div>
@@ -322,80 +336,137 @@ export const RoomStatus: React.FC<RoomStatusProps> = ({
       </section>
 
       {/* ============================================================== */}
-      {/* 2. FILTER & CONTROLS TOOLBAR */}
+      {/* 2. PROMINENT SEARCH BAR & FILTER TOOLBAR */}
       {/* ============================================================== */}
-      <section className="bg-white rounded-xl border border-slate-200/90 p-4 shadow-xs">
-        <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
-          {/* Search bar */}
-          <div className="relative flex-1 min-w-[240px]">
-            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+      <section className="bg-white rounded-xl border border-slate-200/90 p-4 sm:p-5 shadow-xs space-y-4">
+        {/* Prominent Dedicated Search Bar */}
+        <div>
+          <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1.5 flex items-center justify-between">
+            <span className="flex items-center gap-1.5">
+              <Search className="w-3.5 h-3.5 text-indigo-600" />
+              <span>အခန်းနံပါတ် သို့မဟုတ် ငှားသူအမည် ရှာဖွေရန် (SEARCH BY ROOM OR TENANT)</span>
+            </span>
+            {searchQuery && (
+              <span className="text-[11px] font-mono text-indigo-600 font-normal">
+                {filteredRooms.length} / {rooms.length} ခန်း ကိုက်ညီပါသည်
+              </span>
+            )}
+          </label>
+
+          <div className="relative">
+            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-indigo-500" />
             <input
               type="text"
-              placeholder="အခန်းနံပါတ် သို့မဟုတ် ငှားသူအမည် ရှာဖွေပါ (Search room / tenant)..."
+              placeholder="အခန်းနံပါတ် သို့မဟုတ် ငှားသူအမည်ဖြင့် ရှာဖွေပါ (ဥပမာ - 101, 204, Min, Wai Yan, Phone)..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 text-sm bg-slate-50/70 border border-slate-200 rounded-lg text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
+              className="w-full pl-10 pr-28 py-2.5 text-sm bg-slate-50/80 border border-slate-200 rounded-xl text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 focus:bg-white transition-all shadow-2xs font-medium"
             />
+            <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
+              {searchQuery && (
+                <>
+                  <span className="text-xs bg-indigo-50 text-indigo-700 font-mono font-semibold px-2 py-0.5 rounded-full border border-indigo-100">
+                    {filteredRooms.length} ခန်း
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery('')}
+                    className="text-xs text-slate-400 hover:text-slate-600 p-1 hover:bg-slate-200/60 rounded-full transition-colors"
+                    aria-label="Clear search"
+                    title="ရှာဖွေမှု ရှင်းမည်"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* Quick-filter shortcut chips for high-speed access */}
+          <div className="mt-2.5 flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
+            <span className="text-[11px] text-slate-400 font-medium mr-0.5">အမြန်ရွေးချယ်ရန်:</span>
+            {['101', '201', '301', '401', '501', '601'].map((rmNum) => (
+              <button
+                key={rmNum}
+                type="button"
+                onClick={() => setSearchQuery(searchQuery === rmNum ? '' : rmNum)}
+                className={`px-2 py-0.5 rounded text-[11px] font-mono transition-colors border ${
+                  searchQuery === rmNum
+                    ? 'bg-indigo-600 text-white font-bold border-indigo-600 shadow-2xs'
+                    : 'bg-slate-100/80 hover:bg-slate-200 text-slate-700 border-slate-200'
+                }`}
+                title={`အခန်း ${rmNum} အား အမြန်စစ်ထုတ်ရန်`}
+              >
+                #{rmNum}
+              </button>
+            ))}
+
             {searchQuery && (
               <button
+                type="button"
                 onClick={() => setSearchQuery('')}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-slate-600 p-1"
-                aria-label="Clear search"
+                className="text-[11px] text-rose-600 hover:text-rose-700 font-medium ml-1 underline cursor-pointer"
               >
-                <X className="w-3.5 h-3.5" />
+                Clear Search (ရှာဖွေမှု ဖျက်မည်)
               </button>
             )}
           </div>
+        </div>
 
-          {/* Filter selectors & View switch */}
+        {/* Filter selectors, Floor dropdown, and View Actions */}
+        <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
+          {/* Status Segmented Filter */}
+          <div className="flex items-center bg-slate-100 p-1 rounded-lg text-xs font-medium">
+            <button
+              type="button"
+              onClick={() => setStatusFilter('all')}
+              className={`px-3 py-1.5 rounded-md transition-colors ${
+                statusFilter === 'all'
+                  ? 'bg-white text-slate-900 shadow-xs font-semibold'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              အားလုံး ({rooms.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setStatusFilter('available')}
+              className={`px-3 py-1.5 rounded-md transition-colors flex items-center gap-1.5 ${
+                statusFilter === 'available'
+                  ? 'bg-white text-emerald-700 shadow-xs font-semibold'
+                  : 'text-slate-600 hover:text-emerald-700'
+              }`}
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+              လွတ် ({availableRooms})
+            </button>
+            <button
+              type="button"
+              onClick={() => setStatusFilter('occupied')}
+              className={`px-3 py-1.5 rounded-md transition-colors flex items-center gap-1.5 ${
+                statusFilter === 'occupied'
+                  ? 'bg-white text-rose-700 shadow-xs font-semibold'
+                  : 'text-slate-600 hover:text-rose-700'
+              }`}
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
+              ငှားပြီး ({occupiedRooms})
+            </button>
+            <button
+              type="button"
+              onClick={() => setStatusFilter('maintenance')}
+              className={`px-3 py-1.5 rounded-md transition-colors flex items-center gap-1.5 ${
+                statusFilter === 'maintenance'
+                  ? 'bg-white text-amber-700 shadow-xs font-semibold'
+                  : 'text-slate-600 hover:text-amber-700'
+              }`}
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+              ပြုပြင်ဆဲ ({maintenanceRooms})
+            </button>
+          </div>
+
           <div className="flex flex-wrap items-center gap-2">
-            {/* Status Segmented Filter */}
-            <div className="flex items-center bg-slate-100 p-1 rounded-lg text-xs font-medium">
-              <button
-                onClick={() => setStatusFilter('all')}
-                className={`px-3 py-1.5 rounded-md transition-colors ${
-                  statusFilter === 'all'
-                    ? 'bg-white text-slate-900 shadow-xs font-semibold'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                အားလုံး ({rooms.length})
-              </button>
-              <button
-                onClick={() => setStatusFilter('available')}
-                className={`px-3 py-1.5 rounded-md transition-colors flex items-center gap-1.5 ${
-                  statusFilter === 'available'
-                    ? 'bg-white text-emerald-700 shadow-xs font-semibold'
-                    : 'text-slate-600 hover:text-emerald-700'
-                }`}
-              >
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                လွတ် ({availableRooms})
-              </button>
-              <button
-                onClick={() => setStatusFilter('occupied')}
-                className={`px-3 py-1.5 rounded-md transition-colors flex items-center gap-1.5 ${
-                  statusFilter === 'occupied'
-                    ? 'bg-white text-rose-700 shadow-xs font-semibold'
-                    : 'text-slate-600 hover:text-rose-700'
-                }`}
-              >
-                <span className="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
-                ငှားပြီး ({occupiedRooms})
-              </button>
-              <button
-                onClick={() => setStatusFilter('maintenance')}
-                className={`px-3 py-1.5 rounded-md transition-colors flex items-center gap-1.5 ${
-                  statusFilter === 'maintenance'
-                    ? 'bg-white text-amber-700 shadow-xs font-semibold'
-                    : 'text-slate-600 hover:text-amber-700'
-                }`}
-              >
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
-                ပြုပြင်ဆဲ ({maintenanceRooms})
-              </button>
-            </div>
-
             {/* Floor Dropdown */}
             <div className="relative">
               <select
@@ -417,6 +488,7 @@ export const RoomStatus: React.FC<RoomStatusProps> = ({
             {/* View Mode Toggle (Grid vs Table) */}
             <div className="flex items-center bg-slate-100 p-1 rounded-lg">
               <button
+                type="button"
                 onClick={() => setViewMode('grid')}
                 className={`p-1.5 rounded-md transition-colors ${
                   viewMode === 'grid'
@@ -429,6 +501,7 @@ export const RoomStatus: React.FC<RoomStatusProps> = ({
                 <LayoutGrid className="w-4 h-4" />
               </button>
               <button
+                type="button"
                 onClick={() => setViewMode('table')}
                 className={`p-1.5 rounded-md transition-colors ${
                   viewMode === 'table'
@@ -444,8 +517,9 @@ export const RoomStatus: React.FC<RoomStatusProps> = ({
 
             {/* Export CSV Button */}
             <button
+              type="button"
               onClick={handleExportCSV}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors shadow-2xs"
               title="Download CSV"
             >
               <Download className="w-3.5 h-3.5 text-slate-500" />
@@ -454,6 +528,7 @@ export const RoomStatus: React.FC<RoomStatusProps> = ({
 
             {/* Add Room Button (Admin Only) */}
             <button
+              type="button"
               onClick={() => {
                 if (!isAdmin) {
                   onRequestAdminLogin();
@@ -476,20 +551,26 @@ export const RoomStatus: React.FC<RoomStatusProps> = ({
 
         {/* Active Filter Indicators */}
         {(statusFilter !== 'all' || floorFilter !== 'all' || searchQuery) && (
-          <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-            <div>
-              ရလဒ် စုစုပေါင်း: <strong className="text-slate-800 font-mono tabular-nums">{filteredRooms.length}</strong> ခန်း တွေ့ရှိသည်
+          <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+            <div className="flex items-center gap-2">
+              <span>ရလဒ် စုစုပေါင်း: <strong className="text-slate-900 font-mono tabular-nums">{filteredRooms.length}</strong> ခန်း</span>
+              {searchQuery && (
+                <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-md border border-indigo-100 font-medium">
+                  ရှာဖွေမှု: "{searchQuery}"
+                </span>
+              )}
             </div>
             <button
+              type="button"
               onClick={() => {
                 setStatusFilter('all');
                 setFloorFilter('all');
                 setTypeFilter('all');
                 setSearchQuery('');
               }}
-              className="text-indigo-600 hover:text-indigo-800 font-medium"
+              className="text-xs text-indigo-600 hover:text-indigo-800 font-semibold underline cursor-pointer"
             >
-              စစ်ထုတ်မှုများ ပြန်လည်ရှင်းလင်းရန် (Clear filters)
+              စစ်ထုတ်မှုများ အားလုံးရှင်းလင်းရန် (Clear filters)
             </button>
           </div>
         )}
@@ -867,7 +948,11 @@ export const RoomStatus: React.FC<RoomStatusProps> = ({
                     max={50}
                     required
                     value={newRoomFloor}
-                    onChange={(e) => setNewRoomFloor(Number(e.target.value))}
+                    onChange={(e) => {
+                      const f = Number(e.target.value);
+                      setNewRoomFloor(f);
+                      setNewRoomRent(f <= 4 ? 1700 : 1200);
+                    }}
                     className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 font-mono"
                   />
                 </div>
@@ -892,11 +977,11 @@ export const RoomStatus: React.FC<RoomStatusProps> = ({
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    လစဉ်ငှားခ (Monthly Rent - MMK) *
+                    လစဉ်ငှားခ (Monthly Rent - Baht) *
                   </label>
                   <input
                     type="number"
-                    step={10000}
+                    step={100}
                     required
                     value={newRoomRent}
                     onChange={(e) => setNewRoomRent(Number(e.target.value))}
@@ -1041,6 +1126,7 @@ export const RoomStatus: React.FC<RoomStatusProps> = ({
                   tenantName: tenantInputName.trim(),
                   tenantPhone: tenantInputPhone.trim() || undefined,
                   leaseStartDate: new Date().toISOString().slice(0, 10),
+                  isTenantCheckedIn: true,
                 });
                 setQuickActionRoom(null);
               }}

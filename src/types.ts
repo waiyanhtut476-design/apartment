@@ -15,6 +15,7 @@ export interface Room {
   leaseStartDate?: string;
   leaseEndDate?: string;
   notes?: string;
+  isTenantCheckedIn?: boolean;
 }
 
 export type ViewMode = 'grid' | 'table';

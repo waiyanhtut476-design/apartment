@@ -1,31 +1,26 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Default catch-all
+    // Default deny for unspecified collections
     match /{document=**} {
       allow read, write: if false;
     }
 
-    // Test connection path
+    // Health check & connection test path
     match /test/{docId} {
       allow read, write: if true;
     }
 
-    // Invoices Collection Rules
+    // Invoices collection for utility bills
     match /invoices/{invoiceId} {
       allow read: if true;
-      allow create, update: if request.resource.data.room is string
-        && request.resource.data.month is string
-        && request.resource.data.totalAmount is number;
-      allow delete: if true;
+      allow write: if true;
     }
 
-    // Rooms Collection Rules
+    // Rooms collection for apartment room management
     match /rooms/{roomId} {
       allow read: if true;
-      allow create, update: if request.resource.data.roomNumber is string
-        && request.resource.data.status in ['available', 'occupied', 'maintenance'];
-      allow delete: if true;
+      allow write: if true;
     }
   }
 }

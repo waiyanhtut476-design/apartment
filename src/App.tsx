@@ -15,94 +15,54 @@ import {
   Lock,
   LogOut,
   UserCheck,
-  AlertTriangle
+  AlertTriangle,
+  Database,
+  Cloud,
+  RefreshCw
 } from 'lucide-react';
 import { Room, RoomStatusType, UtilityBill, AdminUser } from './types';
 import { INITIAL_ROOMS } from './data/initialRooms';
 import { RoomStatus } from './components/RoomStatus';
 import { BillCalculator } from './components/BillCalculator';
 import { AdminLoginModal } from './components/AdminLoginModal';
+import {
+  subscribeToRooms,
+  saveRoomToFirestore,
+  subscribeToBills,
+  saveBillToFirestore,
+  updateInvoiceStatusInFirestore,
+  deleteInvoiceFromFirestore,
+  resetAllFirestoreData,
+  resetAllRoomsToVacant,
+  firebaseConfig
+} from './firebase';
 
-const STORAGE_KEY = 'apartment_management_rooms_v1';
-const BILLS_STORAGE_KEY = 'apartment_utility_bills_v1';
+const STORAGE_KEY = 'apartment_management_rooms_v6';
+const BILLS_STORAGE_KEY = 'apartment_utility_bills_v3';
 const ADMIN_STORAGE_KEY = 'apartment_admin_user_v1';
 const DESIGNATED_ADMIN_EMAIL = 'waiyanhtut476@gmail.com';
 
-const INITIAL_BILLS: UtilityBill[] = [
-  {
-    id: 'bill-1',
-    roomId: 'room-101',
-    roomNumber: '101',
-    tenantName: 'ကိုအောင်ကျော်စိုး (Ko Aung Kyaw Soe)',
-    billMonth: '2026-09',
-    createdAt: '2026-09-20T10:00:00.000Z',
-    roomRent: 4500,
-    electricPrev: 1200,
-    electricCurrent: 1260,
-    electricUnits: 60,
-    electricRate: 35,
-    electricTotal: 2100,
-    waterPrev: 280,
-    waterCurrent: 295,
-    waterUnits: 15,
-    waterRate: 18,
-    waterTotal: 270,
-    commonFee: 200,
-    grandTotal: 7070,
-    currency: 'Baht',
-    status: 'paid',
-    notes: 'Paid via K-Bank Mobile transfer.'
-  },
-  {
-    id: 'bill-2',
-    roomId: 'room-103',
-    roomNumber: '103',
-    tenantName: 'မသီတာထွေး (Ma Thidar Htwe)',
-    billMonth: '2026-09',
-    createdAt: '2026-09-24T14:30:00.000Z',
-    roomRent: 4500,
-    electricPrev: 950,
-    electricCurrent: 1025,
-    electricUnits: 75,
-    electricRate: 35,
-    electricTotal: 2625,
-    waterPrev: 190,
-    waterCurrent: 208,
-    waterUnits: 18,
-    waterRate: 18,
-    waterTotal: 324,
-    commonFee: 200,
-    grandTotal: 7649,
-    currency: 'Baht',
-    status: 'unpaid',
-    notes: 'Pending payment notification sent.'
-  }
-];
+// All 66 rooms are vacant initially, no pending bills until landlord checks in tenants
+const INITIAL_BILLS: UtilityBill[] = [];
 
 export default function App() {
   // Admin authentication state (Defaults to designated landlord waiyanhtut476@gmail.com)
-  const [adminUser, setAdminUser] = useState<AdminUser | null>(() => {
-    try {
-      const saved = localStorage.getItem(ADMIN_STORAGE_KEY);
-      if (saved) {
-        return JSON.parse(saved);
-      }
-    } catch {
-      // Fallback
-    }
-    // Default landlord session pre-authenticated
-    return {
-      email: DESIGNATED_ADMIN_EMAIL,
-      name: 'အိမ်ရှင် (Landlord Admin)',
-      role: 'admin',
-      isAuthenticated: true,
-      loginTime: new Date().toISOString(),
-    };
+  // Landlord admin session is permanently authorized
+  const [adminUser, setAdminUser] = useState<AdminUser | null>({
+    email: DESIGNATED_ADMIN_EMAIL,
+    name: 'အိမ်ရှင် (Landlord Admin)',
+    role: 'admin',
+    isAuthenticated: true,
+    loginTime: new Date().toISOString(),
   });
 
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
 
-  // Load rooms from localStorage or initial dummy data
+  // Real-time Cloud Firestore & LocalStorage Sync Status
+  const [syncStatus, setSyncStatus] = useState<'synced' | 'syncing' | 'offline'>('syncing');
+  const [lastSyncTime, setLastSyncTime] = useState<string>('Just now');
+
+  // Load rooms from localStorage (instant offline boot) or fallback to initial dummy data
   const [rooms, setRooms] = useState<Room[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -115,7 +75,7 @@ export default function App() {
     return INITIAL_ROOMS;
   });
 
-  // Load saved bills
+  // Load saved bills from localStorage (instant offline boot) or fallback to initial bills
   const [savedBills, setSavedBills] = useState<UtilityBill[]>(() => {
     try {
       const saved = localStorage.getItem(BILLS_STORAGE_KEY);
@@ -131,25 +91,73 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'rooms' | 'calculator' | 'revenue' | 'maintenance'>('rooms');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  const isAdmin = Boolean(adminUser && adminUser.isAuthenticated);
+  // Landlord has permanent full administrative access
+  const isAdmin = true;
 
-  // Sync to localStorage
+  // Guarantee all 66 rooms are initialized as completely vacant (no dummy tenants)
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(rooms));
-    } catch (e) {
-      console.error('Failed to save rooms to localStorage', e);
+    const VACANT_MIGRATION_KEY = 'apartment_all_66_vacant_applied_v1';
+    if (!localStorage.getItem(VACANT_MIGRATION_KEY)) {
+      localStorage.setItem(VACANT_MIGRATION_KEY, 'true');
+      setRooms(INITIAL_ROOMS);
+      setSavedBills([]);
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(INITIAL_ROOMS));
+        localStorage.setItem(BILLS_STORAGE_KEY, JSON.stringify([]));
+      } catch (e) {
+        console.error(e);
+      }
+      resetAllRoomsToVacant(INITIAL_ROOMS).catch((err) => console.error('Reset vacant error:', err));
     }
-  }, [rooms]);
+  }, []);
 
+  // 1. Subscribe to Real-Time Rooms collection in Firestore
   useEffect(() => {
-    try {
-      localStorage.setItem(BILLS_STORAGE_KEY, JSON.stringify(savedBills));
-    } catch (e) {
-      console.error('Failed to save bills to localStorage', e);
-    }
-  }, [savedBills]);
+    setSyncStatus('syncing');
+    const unsubscribe = subscribeToRooms(
+      INITIAL_ROOMS,
+      (firestoreRooms) => {
+        setRooms(firestoreRooms);
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(firestoreRooms));
+        } catch (e) {
+          console.error('Failed to sync rooms to localStorage', e);
+        }
+        setSyncStatus('synced');
+        setLastSyncTime(new Date().toLocaleTimeString());
+      },
+      (err) => {
+        console.warn('Real-time rooms listener offline or fallback:', err);
+        setSyncStatus('offline');
+      }
+    );
 
+    return () => unsubscribe();
+  }, []);
+
+  // 2. Subscribe to Real-Time Invoices collection in Firestore
+  useEffect(() => {
+    const unsubscribe = subscribeToBills(
+      INITIAL_BILLS,
+      (firestoreBills) => {
+        setSavedBills(firestoreBills);
+        try {
+          localStorage.setItem(BILLS_STORAGE_KEY, JSON.stringify(firestoreBills));
+        } catch (e) {
+          console.error('Failed to sync bills to localStorage', e);
+        }
+        setSyncStatus('synced');
+        setLastSyncTime(new Date().toLocaleTimeString());
+      },
+      (err) => {
+        console.warn('Real-time bills listener offline or fallback:', err);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  // 3. Persist Admin Session in LocalStorage
   useEffect(() => {
     try {
       if (adminUser) {
@@ -180,75 +188,211 @@ export default function App() {
     showToast('အိမ်ရှင် အကောင့်မှ ထွက်ခွာပြီးပါပြီ (Guest Read-Only Mode)။');
   };
 
-  // Add Room
+  // Add Room (Local State + LocalStorage + Cloud Firestore)
   const handleAddRoom = (newRoomData: Omit<Room, 'id'>) => {
     const newRoom: Room = {
       ...newRoomData,
       id: `room-${Date.now()}`,
     };
-    setRooms((prev) => [newRoom, ...prev]);
-    showToast(`အခန်းအမှတ် ${newRoom.roomNumber} အသစ်ကို အောင်မြင်စွာ ထည့်သွင်းပြီးပါပြီ။`);
-  };
+    const updated = [newRoom, ...rooms];
+    setRooms(updated);
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    } catch (e) {
+      console.error(e);
+    }
 
-  // Quick Status Update
-  const handleUpdateStatus = (roomId: string, newStatus: RoomStatusType, tenantName?: string | null) => {
-    setRooms((prev) =>
-      prev.map((room) => {
-        if (room.id === roomId) {
-          return {
-            ...room,
-            status: newStatus,
-            tenantName: newStatus === 'available' ? null : tenantName !== undefined ? tenantName : room.tenantName,
-            tenantPhone: newStatus === 'available' ? undefined : room.tenantPhone,
-          };
-        }
-        return room;
+    // Persist to Cloud Firestore in real-time
+    saveRoomToFirestore(newRoom)
+      .then(() => {
+        setSyncStatus('synced');
+        setLastSyncTime(new Date().toLocaleTimeString());
       })
-    );
+      .catch((err) => console.error('Firestore save room error:', err));
+
+    showToast(`အခန်းအမှတ် ${newRoom.roomNumber} အသစ်ကို အောင်မြင်စွာ ထည့်သွင်းပြီးပါပြီ (Firestore & LocalStorage သိမ်းဆည်းပြီး)။`);
+  };
+
+  // Quick Status Update (Local State + LocalStorage + Cloud Firestore)
+  const handleUpdateStatus = (roomId: string, newStatus: RoomStatusType, tenantName?: string | null) => {
+    let targetUpdatedRoom: Room | null = null;
+    const updated = rooms.map((room) => {
+      if (room.id === roomId) {
+        const effectiveTenantName = newStatus === 'available' ? null : tenantName !== undefined ? tenantName : room.tenantName;
+        const isOcc = newStatus === 'occupied' && Boolean(effectiveTenantName && effectiveTenantName.trim().length > 0);
+
+        const u: Room = {
+          ...room,
+          status: isOcc ? 'occupied' : newStatus === 'maintenance' ? 'maintenance' : 'available',
+          tenantName: isOcc ? effectiveTenantName : null,
+          tenantPhone: isOcc ? room.tenantPhone : undefined,
+          isTenantCheckedIn: isOcc,
+        };
+        targetUpdatedRoom = u;
+        return u;
+      }
+      return room;
+    });
+
+    setRooms(updated);
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    } catch (e) {
+      console.error(e);
+    }
+
+    if (targetUpdatedRoom) {
+      saveRoomToFirestore(targetUpdatedRoom)
+        .then(() => {
+          setSyncStatus('synced');
+          setLastSyncTime(new Date().toLocaleTimeString());
+        })
+        .catch((err) => console.error('Firestore update room status error:', err));
+    }
+
     const targetRoom = rooms.find((r) => r.id === roomId);
-    showToast(`အခန်း ${targetRoom?.roomNumber || ''} အခြေအနေ ပြောင်းလဲပြီးပါပြီ (${newStatus})`);
+    showToast(`အခန်း ${targetRoom?.roomNumber || ''} အခြေအနေ ပြောင်းလဲပြီးပါပြီ (${newStatus}) - Cloud Synced`);
   };
 
-  // Update full room details
+  // Update full room details (Local State + LocalStorage + Cloud Firestore)
   const handleUpdateRoom = (updatedRoom: Room) => {
-    setRooms((prev) =>
-      prev.map((room) => (room.id === updatedRoom.id ? updatedRoom : room))
-    );
-    showToast(`အခန်း ${updatedRoom.roomNumber} အချက်အလက်များ သိမ်းဆည်းပြီးပါပြီ။`);
+    const isOcc =
+      updatedRoom.status === 'occupied' &&
+      Boolean(updatedRoom.tenantName && updatedRoom.tenantName.trim().length > 0) &&
+      Boolean(updatedRoom.isTenantCheckedIn !== false);
+
+    const sanitizedRoom: Room = {
+      ...updatedRoom,
+      status: isOcc ? 'occupied' : updatedRoom.status === 'maintenance' ? 'maintenance' : 'available',
+      tenantName: isOcc ? updatedRoom.tenantName : null,
+      tenantPhone: isOcc ? updatedRoom.tenantPhone : undefined,
+      isTenantCheckedIn: isOcc,
+    };
+
+    const updated = rooms.map((room) => (room.id === sanitizedRoom.id ? sanitizedRoom : room));
+    setRooms(updated);
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    } catch (e) {
+      console.error(e);
+    }
+
+    saveRoomToFirestore(sanitizedRoom)
+      .then(() => {
+        setSyncStatus('synced');
+        setLastSyncTime(new Date().toLocaleTimeString());
+      })
+      .catch((err) => console.error('Firestore save room error:', err));
+
+    showToast(`အခန်း ${sanitizedRoom.roomNumber} အချက်အလက်များ သိမ်းဆည်းပြီးပါပြီ (Firestore Synced)။`);
   };
 
-  // Save Utility Bill
+  // Save Utility Bill (Local State + LocalStorage + Cloud Firestore)
   const handleSaveBill = (newBill: UtilityBill) => {
-    setSavedBills((prev) => [newBill, ...prev]);
-    showToast(`အခန်း ${newBill.roomNumber} အတွက် ဘေလ် (${newBill.grandTotal.toLocaleString()} ${newBill.currency}) ကို သိမ်းဆည်းပြီးပါပြီ။`);
+    const updated = [newBill, ...savedBills.filter((b) => b.id !== newBill.id)];
+    setSavedBills(updated);
+    try {
+      localStorage.setItem(BILLS_STORAGE_KEY, JSON.stringify(updated));
+    } catch (e) {
+      console.error(e);
+    }
+
+    saveBillToFirestore(newBill)
+      .then(() => {
+        setSyncStatus('synced');
+        setLastSyncTime(new Date().toLocaleTimeString());
+      })
+      .catch((err) => console.error('Firestore save bill error:', err));
+
+    showToast(`အခန်း ${newBill.roomNumber} အတွက် ဘေလ် (${newBill.grandTotal.toLocaleString()} ${newBill.currency}) ကို Cloud Database & LocalStorage တွင် သိမ်းဆည်းပြီးပါပြီ။`);
   };
 
-  // Update Bill Paid Status
+  // Update Bill Paid Status (Local State + LocalStorage + Cloud Firestore)
   const handleUpdateBillStatus = (billId: string, status: 'paid' | 'unpaid') => {
-    setSavedBills((prev) =>
-      prev.map((b) => (b.id === billId ? { ...b, status } : b))
-    );
-    showToast(`ဘေလ်အခြေအနေ ပြောင်းလဲပြီးပါပြီ (${status === 'paid' ? 'Paid' : 'Unpaid'})`);
+    const updated = savedBills.map((b) => (b.id === billId ? { ...b, status } : b));
+    setSavedBills(updated);
+    try {
+      localStorage.setItem(BILLS_STORAGE_KEY, JSON.stringify(updated));
+    } catch (e) {
+      console.error(e);
+    }
+
+    updateInvoiceStatusInFirestore(billId, status)
+      .then(() => {
+        setSyncStatus('synced');
+        setLastSyncTime(new Date().toLocaleTimeString());
+      })
+      .catch((err) => console.error('Firestore update bill status error:', err));
+
+    showToast(`ဘေလ်အခြေအနေ ပြောင်းလဲပြီးပါပြီ (${status === 'paid' ? 'Paid' : 'Unpaid'}) - Cloud Synced`);
   };
 
-  // Delete Bill
+  // Delete Bill (Local State + LocalStorage + Cloud Firestore)
   const handleDeleteBill = (billId: string) => {
-    setSavedBills((prev) => prev.filter((b) => b.id !== billId));
-    showToast('ဘေလ်အား စာရင်းမှ ဖျက်ပြီးပါပြီ။');
+    const updated = savedBills.filter((b) => b.id !== billId);
+    setSavedBills(updated);
+    try {
+      localStorage.setItem(BILLS_STORAGE_KEY, JSON.stringify(updated));
+    } catch (e) {
+      console.error(e);
+    }
+
+    deleteInvoiceFromFirestore(billId)
+      .then(() => {
+        setSyncStatus('synced');
+        setLastSyncTime(new Date().toLocaleTimeString());
+      })
+      .catch((err) => console.error('Firestore delete bill error:', err));
+
+    showToast('ဘေလ်အား စာရင်းမှ ဖျက်ပြီးပါပြီ (Cloud Synced)။');
   };
 
-  // Reset demo data
+  // Clear All Bills (Local State + LocalStorage + Cloud Firestore)
+  const handleClearAllBills = async () => {
+    const billsToDelete = [...savedBills];
+    setSavedBills([]);
+    try {
+      localStorage.setItem(BILLS_STORAGE_KEY, JSON.stringify([]));
+    } catch (e) {
+      console.error(e);
+    }
+
+    try {
+      for (const bill of billsToDelete) {
+        await deleteInvoiceFromFirestore(bill.id);
+      }
+      setSyncStatus('synced');
+      setLastSyncTime(new Date().toLocaleTimeString());
+      showToast('ဘေလ်မှတ်တမ်းအားလုံးကို အောင်မြင်စွာ ဖျက်ပြီးပါပြီ (Cloud Synced)။');
+    } catch (err) {
+      console.error('Firestore delete all bills error:', err);
+    }
+  };
+
+  // Reset demo data (Reset both LocalStorage and Cloud Firestore)
   const handleResetData = () => {
     if (!isAdmin) {
       setIsLoginModalOpen(true);
       return;
     }
-    if (confirm('နမူနာ အချက်အလက်များအား မူလအတိုင်း ပြန်လည်ထားရှိမည်လား?')) {
+    if (confirm('အခန်း ၆၆ ခန်းလုံးအား အခန်းလွတ် (Available) အဖြစ် ပြန်လည်ထားရှိမည်လား? (Firestore နှင့် LocalStorage ရှိ အခန်းအားလုံးကို အခန်းလွတ်အဖြစ် ပြန်လည်ပြင်ဆင်ပါမည်)')) {
       setRooms(INITIAL_ROOMS);
-      setSavedBills(INITIAL_BILLS);
-      localStorage.removeItem(STORAGE_KEY);
-      localStorage.removeItem(BILLS_STORAGE_KEY);
-      showToast('မူလ အချက်အလက်များ ပြန်လည်ထည့်သွင်းပြီးပါပြီ။');
+      setSavedBills([]);
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(INITIAL_ROOMS));
+        localStorage.setItem(BILLS_STORAGE_KEY, JSON.stringify([]));
+      } catch (e) {
+        console.error(e);
+      }
+
+      resetAllRoomsToVacant(INITIAL_ROOMS)
+        .then(() => {
+          setSyncStatus('synced');
+          setLastSyncTime(new Date().toLocaleTimeString());
+        })
+        .catch((err) => console.error('Firestore reset error:', err));
+
+      showToast('အခန်း ၆၆ ခန်းလုံးအား အခန်းလွတ် (Available) အဖြစ် ပြန်လည်ထားရှိပြီးပါပြီ။');
     }
   };
 
@@ -316,6 +460,26 @@ export default function App() {
 
           {/* Zone 3: Admin Auth Status & Controls */}
           <div className="flex items-center gap-2">
+            {/* Real-time Cloud Sync Badge */}
+            <div
+              className="hidden xl:flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border border-slate-200 bg-white"
+              title={`Firestore Real-time & LocalStorage Synced (${firebaseConfig.projectId})`}
+            >
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  syncStatus === 'synced'
+                    ? 'bg-emerald-500'
+                    : syncStatus === 'syncing'
+                    ? 'bg-amber-400 animate-pulse'
+                    : 'bg-slate-400'
+                }`}
+              ></span>
+              <Database className="w-3.5 h-3.5 text-indigo-600" />
+              <span className="text-[11px] font-medium text-slate-600">
+                {syncStatus === 'synced' ? 'Cloud & Local Synced' : syncStatus === 'syncing' ? 'Syncing...' : 'Local Cache'}
+              </span>
+            </div>
+
             {isAdmin ? (
               <div className="flex items-center gap-2">
                 <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200/90 rounded-lg">
@@ -355,30 +519,39 @@ export default function App() {
         </div>
       </header>
 
-      {/* Guest Mode Warning Banner (if not logged in) */}
-      {!isAdmin && (
-        <div className="bg-amber-500 text-white px-4 py-2.5 shadow-xs border-b border-amber-600/40">
-          <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2 text-xs">
-            <div className="flex items-center gap-2 text-center sm:text-left">
-              <Lock className="w-4 h-4 text-amber-100 shrink-0" />
-              <span>
-                <strong>သတိပြုရန်:</strong> လက်ရှိတွင် ဧည့်သည် (Read-Only Mode) ဖြင့် ကြည့်ရှုနေပါသည်။ အခန်းအသစ်ထည့်ခြင်း၊ Check-in/Check-out ပြုလုပ်ခြင်းနှင့် ဘေလ်သိမ်းဆည်းခြင်းများကို <strong>အိမ်ရှင် (Admin) တစ်ဦးတည်းသာ</strong> ပြုလုပ်ခွင့်ရှိပါသည်။
-              </span>
-            </div>
-            <button
-              onClick={() => setIsLoginModalOpen(true)}
-              className="px-3 py-1 bg-white text-amber-900 font-bold rounded-md hover:bg-amber-50 transition-colors shadow-2xs whitespace-nowrap"
-            >
-              အိမ်ရှင်အဖြစ် Login ဝင်မည် →
-            </button>
-          </div>
-        </div>
-      )}
+      {/* Main Viewport */}
 
       {/* ============================================================== */}
       {/* MAIN VIEWPORT CONTAINER */}
       {/* ============================================================== */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
+        {/* Page Title & Context Header with Cloud Persistence Banner */}
+        <div className="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div>
+            <h1 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">
+              တိုက်ခန်းနှင့် အခန်းများ စီမံခန့်ခွဲမှု Dashboard
+            </h1>
+            <p className="text-xs sm:text-sm text-slate-500 mt-1">
+              Apartment Room Status Dashboard & Tenant Management System
+            </p>
+          </div>
+
+          <div
+            className="flex flex-wrap items-center gap-2 self-start sm:self-auto text-xs bg-white border border-slate-200 px-3.5 py-2 rounded-xl shadow-2xs"
+            title="ဒေတာများကို Browser LocalStorage နှင့် Firebase Firestore နှစ်ခုစလုံးတွင် အချိန်နှင့်တပြေးညီ Real-time အမှန်တကယ် သိမ်းဆည်းထားပြီး Refresh ပြုလုပ်သော်လည်း မပျောက်ပျက်ပါ"
+          >
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+            </span>
+            <span className="font-semibold text-slate-800">Cloud & Local Storage: Active</span>
+            <span className="text-slate-300">|</span>
+            <span className="text-slate-500 font-mono text-[11px]">
+              Project: {firebaseConfig.projectId} ({lastSyncTime})
+            </span>
+          </div>
+        </div>
+
         {/* Mobile Navigation Pills */}
         <div className="md:hidden flex items-center gap-2 overflow-x-auto pb-3 mb-4 text-xs font-medium">
           <button
@@ -433,6 +606,7 @@ export default function App() {
             savedBills={savedBills}
             onUpdateBillStatus={handleUpdateBillStatus}
             onDeleteBill={handleDeleteBill}
+            onClearAllBills={handleClearAllBills}
           />
         )}
 
@@ -474,7 +648,7 @@ export default function App() {
                   ခန့်မှန်းခြေ စုစုပေါင်း အပြည့်အဝ ဝင်ငွေ (Potential)
                 </span>
                 <div className="mt-2 text-2xl font-bold font-mono text-slate-900 tabular-nums">
-                  {rooms.reduce((s, r) => s + r.monthlyRent, 0).toLocaleString()} MMK
+                  {rooms.reduce((s, r) => s + r.monthlyRent, 0).toLocaleString()} Baht
                 </div>
                 <p className="text-xs text-slate-500 mt-1">အခန်းအားလုံး ငှားရမ်းနိုင်ပါက</p>
               </div>
@@ -488,7 +662,7 @@ export default function App() {
                     .filter((r) => r.status === 'occupied')
                     .reduce((s, r) => s + r.monthlyRent, 0)
                     .toLocaleString()}{' '}
-                  MMK
+                  Baht
                 </div>
                 <p className="text-xs text-emerald-600 mt-1">
                   {rooms.filter((r) => r.status === 'occupied').length} ခန်းမှ ရရှိသော ပမာဏ
@@ -504,7 +678,7 @@ export default function App() {
                     .filter((r) => r.status !== 'occupied')
                     .reduce((s, r) => s + r.monthlyRent, 0)
                     .toLocaleString()}{' '}
-                  MMK
+                  Baht
                 </div>
                 <p className="text-xs text-slate-500 mt-1">
                   {rooms.filter((r) => r.status !== 'occupied').length} ခန်း လွတ်/ပြုပြင်ဆဲ
@@ -548,7 +722,7 @@ export default function App() {
                         </span>
                       </td>
                       <td className="py-2.5 px-4 text-right font-mono font-semibold text-slate-900 tabular-nums">
-                        {r.monthlyRent.toLocaleString()} Ks
+                        {r.monthlyRent.toLocaleString()} Baht
                       </td>
                     </tr>
                   ))}

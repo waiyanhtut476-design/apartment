@@ -22,7 +22,8 @@ import {
   Info,
   Clock,
   Lock,
-  ShieldCheck
+  ShieldCheck,
+  RotateCcw
 } from 'lucide-react';
 import { Room, UtilityBill } from '../types';
 import {
@@ -41,6 +42,7 @@ interface BillCalculatorProps {
   savedBills?: UtilityBill[];
   onUpdateBillStatus?: (billId: string, status: 'paid' | 'unpaid') => void;
   onDeleteBill?: (billId: string) => void;
+  onClearAllBills?: () => void;
 }
 
 export const BillCalculator: React.FC<BillCalculatorProps> = ({
@@ -51,6 +53,7 @@ export const BillCalculator: React.FC<BillCalculatorProps> = ({
   savedBills = [],
   onUpdateBillStatus,
   onDeleteBill,
+  onClearAllBills,
 }) => {
   // Selected Room
   const [selectedRoomId, setSelectedRoomId] = useState<string>(() => {
@@ -66,20 +69,72 @@ export const BillCalculator: React.FC<BillCalculatorProps> = ({
   // Currency (Default Baht as per prompt specifications)
   const [currency, setCurrency] = useState<'Baht' | 'MMK'>('Baht');
 
-  // Rates (Defaults specified in prompt: Electricity = 35 Baht, Water = 18 Baht, Common Fee = 200 Baht)
-  const [electricRate, setElectricRate] = useState<number>(35);
-  const [waterRate, setWaterRate] = useState<number>(18);
-  const [commonFee, setCommonFee] = useState<number>(200);
+  // Rates (Defaults: Electricity = 10 Baht, Water = 25 Baht, Common Fee = 100 Baht)
+  const RATES_STORAGE_KEY = 'apartment_rates_config_v2';
+  const DEFAULT_ELECTRIC_RATE = 10;
+  const DEFAULT_WATER_RATE = 25;
+  const DEFAULT_COMMON_FEE = 100;
 
-  // Meter Readings
-  const [electricPrev, setElectricPrev] = useState<string>('1240');
-  const [electricCurrent, setElectricCurrent] = useState<string>('1285');
+  const [electricRate, setElectricRate] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem(RATES_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (typeof parsed.electricRate === 'number') return parsed.electricRate;
+      }
+    } catch {
+      // Fallback
+    }
+    return DEFAULT_ELECTRIC_RATE;
+  });
 
-  const [waterPrev, setWaterPrev] = useState<string>('310');
-  const [waterCurrent, setWaterCurrent] = useState<string>('326');
+  const [waterRate, setWaterRate] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem(RATES_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (typeof parsed.waterRate === 'number') return parsed.waterRate;
+      }
+    } catch {
+      // Fallback
+    }
+    return DEFAULT_WATER_RATE;
+  });
+
+  const [commonFee, setCommonFee] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem(RATES_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (typeof parsed.commonFee === 'number') return parsed.commonFee;
+      }
+    } catch {
+      // Fallback
+    }
+    return DEFAULT_COMMON_FEE;
+  });
+
+  // Persist customized rates in localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        RATES_STORAGE_KEY,
+        JSON.stringify({ electricRate, waterRate, commonFee })
+      );
+    } catch (e) {
+      console.error('Failed to save rates config', e);
+    }
+  }, [electricRate, waterRate, commonFee]);
+
+  // Meter Readings - start clean without dummy numbers
+  const [electricPrev, setElectricPrev] = useState<string>('0');
+  const [electricCurrent, setElectricCurrent] = useState<string>('0');
+
+  const [waterPrev, setWaterPrev] = useState<string>('0');
+  const [waterCurrent, setWaterCurrent] = useState<string>('0');
 
   // Custom or overridden Room Rent
-  const [roomRentInput, setRoomRentInput] = useState<string>('4500');
+  const [roomRentInput, setRoomRentInput] = useState<string>('1700');
 
   // Additional note
   const [billNotes, setBillNotes] = useState<string>('ကျေးဇူးပြု၍ လကုန် ၅ ရက်နေ့ နောက်ဆုံးထား ပေးသွင်းပေးပါရန်။');
@@ -90,6 +145,8 @@ export const BillCalculator: React.FC<BillCalculatorProps> = ({
   const [firestoreStatusMessage, setFirestoreStatusMessage] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState<boolean>(false);
   const [copiedText, setCopiedText] = useState<boolean>(false);
+  const [billToDelete, setBillToDelete] = useState<UtilityBill | null>(null);
+  const [showClearAllConfirm, setShowClearAllConfirm] = useState<boolean>(false);
 
   const receiptRef = useRef<HTMLDivElement>(null);
 
@@ -98,20 +155,28 @@ export const BillCalculator: React.FC<BillCalculatorProps> = ({
     return rooms.find((r) => r.id === selectedRoomId) || rooms[0] || null;
   }, [rooms, selectedRoomId]);
 
-  // When room changes, prefill room rent (convert or adapt to Baht/currency)
+  // Helper to reset form back to clean original default state (မူလအတိုင်း)
+  const resetFormToOriginal = () => {
+    setElectricPrev('0');
+    setElectricCurrent('0');
+    setWaterPrev('0');
+    setWaterCurrent('0');
+    if (currentRoom) {
+      setRoomRentInput(String(currentRoom.monthlyRent));
+    }
+    setBillNotes('ကျေးဇူးပြု၍ လကုန် ၅ ရက်နေ့ နောက်ဆုံးထား ပေးသွင်းပေးပါရန်။');
+  };
+
+  // When room changes, prefill room rent and reset meter fields cleanly to 0 (မူလအတိုင်း)
   useEffect(() => {
     if (currentRoom) {
-      if (currency === 'Baht') {
-        const converted =
-          currentRoom.monthlyRent > 100000
-            ? Math.round(currentRoom.monthlyRent / 100)
-            : currentRoom.monthlyRent;
-        setRoomRentInput(String(converted));
-      } else {
-        setRoomRentInput(String(currentRoom.monthlyRent));
-      }
+      setRoomRentInput(String(currentRoom.monthlyRent));
+      setElectricPrev('0');
+      setElectricCurrent('0');
+      setWaterPrev('0');
+      setWaterCurrent('0');
     }
-  }, [currentRoom, currency]);
+  }, [currentRoom?.id, currentRoom?.monthlyRent]);
 
   // Calculated differences and costs (React state / memoized real-time calculation)
   const electricPrevNum = Math.max(0, Number(electricPrev) || 0);
@@ -215,6 +280,9 @@ export const BillCalculator: React.FC<BillCalculatorProps> = ({
 
       // Open Digital Receipt Preview Modal
       setActiveReceipt(newBill);
+
+      // Reset form to original default state (မူလအတိုင်း 0, 0 သို့ ပြန်လည်ထားရှိခြင်း)
+      resetFormToOriginal();
     } catch (error) {
       console.error('Error saving bill to Firebase:', error);
       setFirestoreStatusMessage('သိမ်းဆည်းမှု လုပ်ငန်းစဉ် ပြီးစီးပါပြီ။');
@@ -393,25 +461,17 @@ ${activeReceipt.notes ? `မှတ်ချက်: ${activeReceipt.notes}` : ''}
             </button>
           </div>
 
-          {/* Rate config toggle (Admin Only) */}
+          {/* Rate config toggle */}
           <button
-            onClick={() => {
-              if (!isAdmin) {
-                onRequestAdminLogin();
-                return;
-              }
-              setShowSettings(!showSettings);
-            }}
+            onClick={() => setShowSettings(!showSettings)}
             className={`p-2 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition-colors ${
               showSettings
                 ? 'bg-slate-900 text-white border-slate-900'
-                : isAdmin
-                ? 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                : 'bg-indigo-50 text-indigo-900 border-indigo-200 hover:bg-indigo-100'
+                : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
             }`}
-            title={isAdmin ? "နှုန်းထားများ ပြင်ဆင်ရန် (Settings)" : "အိမ်ရှင် (Admin) သာ နှုန်းထားများ ပြင်ဆင်ခွင့်ရှိပါသည်"}
+            title="နှုန်းထားများ ပြင်ဆင်ရန် (Settings)"
           >
-            {isAdmin ? <Settings className="w-4 h-4" /> : <Lock className="w-3.5 h-3.5 text-indigo-700" />}
+            <Settings className="w-4 h-4" />
             <span className="hidden sm:inline">နှုန်းထားများ (Rates)</span>
           </button>
         </div>
@@ -445,13 +505,13 @@ ${activeReceipt.notes ? `မှတ်ချက်: ${activeReceipt.notes}` : ''}
             </div>
             <button
               onClick={() => {
-                setElectricRate(35);
-                setWaterRate(18);
-                setCommonFee(200);
+                setElectricRate(DEFAULT_ELECTRIC_RATE);
+                setWaterRate(DEFAULT_WATER_RATE);
+                setCommonFee(DEFAULT_COMMON_FEE);
               }}
-              className="text-xs text-indigo-400 hover:text-indigo-300 underline"
+              className="text-xs text-indigo-400 hover:text-indigo-300 underline font-medium"
             >
-              Reset to Defaults (35 / 18 / 200)
+              Reset to Defaults (10 / 25 / 100)
             </button>
           </div>
 
@@ -467,7 +527,7 @@ ${activeReceipt.notes ? `မှတ်ချက်: ${activeReceipt.notes}` : ''}
                 onChange={(e) => setElectricRate(Number(e.target.value))}
                 className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white font-mono"
               />
-              <span className="text-[11px] text-slate-400 mt-1 block">မူလသတ်မှတ်ဈေး: 35 {currency}</span>
+              <span className="text-[11px] text-slate-400 mt-1 block">မူလသတ်မှတ်ဈေး: 10 {currency}</span>
             </div>
 
             <div>
@@ -481,7 +541,7 @@ ${activeReceipt.notes ? `မှတ်ချက်: ${activeReceipt.notes}` : ''}
                 onChange={(e) => setWaterRate(Number(e.target.value))}
                 className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white font-mono"
               />
-              <span className="text-[11px] text-slate-400 mt-1 block">မူလသတ်မှတ်ဈေး: 18 {currency}</span>
+              <span className="text-[11px] text-slate-400 mt-1 block">မူလသတ်မှတ်ဈေး: 25 {currency}</span>
             </div>
 
             <div>
@@ -495,7 +555,7 @@ ${activeReceipt.notes ? `မှတ်ချက်: ${activeReceipt.notes}` : ''}
                 onChange={(e) => setCommonFee(Number(e.target.value))}
                 className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white font-mono"
               />
-              <span className="text-[11px] text-slate-400 mt-1 block">မူလသတ်မှတ်ဈေး: 200 {currency}</span>
+              <span className="text-[11px] text-slate-400 mt-1 block">မူလသတ်မှတ်ဈေး: 100 {currency}</span>
             </div>
           </div>
         </div>
@@ -623,12 +683,12 @@ ${activeReceipt.notes ? `မှတ်ချက်: ${activeReceipt.notes}` : ''}
                   <Zap className="w-4 h-4 text-amber-500" />
                   <span>၃။ မီးမီတာ ယူနစ် ဖတ်ရှုခြင်း (Electricity Meter)</span>
                 </h3>
-                <span className="text-xs px-2 py-0.5 rounded bg-amber-50 text-amber-700 font-medium border border-amber-200/80">
+                <span className="text-xs px-2.5 py-1 rounded bg-amber-50 text-amber-800 font-semibold border border-amber-200">
                   ၁ ယူနစ် = {electricRate} {currency}
                 </span>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">
                     ယခင် မီးယူနစ်ဟောင်း (Previous Unit) *
@@ -639,7 +699,7 @@ ${activeReceipt.notes ? `မှတ်ချက်: ${activeReceipt.notes}` : ''}
                     required
                     value={electricPrev}
                     onChange={(e) => setElectricPrev(e.target.value)}
-                    placeholder="ဥပမာ- 1240"
+                    placeholder="0"
                     className="w-full px-3 py-2 text-sm bg-white border border-slate-200 rounded-lg font-mono tabular-nums focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
                   />
                 </div>
@@ -654,19 +714,33 @@ ${activeReceipt.notes ? `မှတ်ချက်: ${activeReceipt.notes}` : ''}
                     required
                     value={electricCurrent}
                     onChange={(e) => setElectricCurrent(e.target.value)}
-                    placeholder="ဥပမာ- 1285"
+                    placeholder="0"
                     className="w-full px-3 py-2 text-sm bg-white border border-slate-200 rounded-lg font-mono tabular-nums focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    မီး ၁ ယူနစ်နှုန်း ({currency}) *
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    required
+                    value={electricRate}
+                    onChange={(e) => setElectricRate(Number(e.target.value))}
+                    className="w-full px-3 py-2 text-sm bg-amber-50/50 border border-amber-300 rounded-lg font-mono font-bold text-amber-900 tabular-nums focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
                   />
                 </div>
               </div>
 
               {/* Electricity Real-time feedback bar */}
-              <div className="mt-2 flex items-center justify-between px-3 py-2 rounded-lg bg-amber-50/60 border border-amber-100 text-xs">
-                <span className="text-slate-600">
+              <div className="mt-2.5 flex items-center justify-between px-3 py-2 rounded-lg bg-amber-50/70 border border-amber-200 text-xs">
+                <span className="text-slate-700">
                   သုံးစွဲယူနစ် ခြားနားချက်:{' '}
-                  <strong className="font-mono text-slate-900">{electricUnitsUsed}</strong> units
+                  <strong className="font-mono text-slate-900 font-bold">{electricUnitsUsed}</strong> units
                 </span>
-                <span className="font-semibold text-amber-800 font-mono tabular-nums">
+                <span className="font-semibold text-amber-900 font-mono tabular-nums">
                   {electricUnitsUsed} × {electricRate} = {electricTotalCost.toLocaleString()} {currency}
                 </span>
               </div>
@@ -685,12 +759,12 @@ ${activeReceipt.notes ? `မှတ်ချက်: ${activeReceipt.notes}` : ''}
                   <Droplets className="w-4 h-4 text-sky-500" />
                   <span>၄။ ရေမီတာ ယူနစ် ဖတ်ရှုခြင်း (Water Meter)</span>
                 </h3>
-                <span className="text-xs px-2 py-0.5 rounded bg-sky-50 text-sky-700 font-medium border border-sky-200/80">
+                <span className="text-xs px-2.5 py-1 rounded bg-sky-50 text-sky-800 font-semibold border border-sky-200">
                   ၁ ယူနစ် = {waterRate} {currency}
                 </span>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">
                     ယခင် ရေယူနစ်ဟောင်း (Previous Unit) *
@@ -701,7 +775,7 @@ ${activeReceipt.notes ? `မှတ်ချက်: ${activeReceipt.notes}` : ''}
                     required
                     value={waterPrev}
                     onChange={(e) => setWaterPrev(e.target.value)}
-                    placeholder="ဥပမာ- 310"
+                    placeholder="0"
                     className="w-full px-3 py-2 text-sm bg-white border border-slate-200 rounded-lg font-mono tabular-nums focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
                   />
                 </div>
@@ -716,19 +790,33 @@ ${activeReceipt.notes ? `မှတ်ချက်: ${activeReceipt.notes}` : ''}
                     required
                     value={waterCurrent}
                     onChange={(e) => setWaterCurrent(e.target.value)}
-                    placeholder="ဥပမာ- 326"
+                    placeholder="0"
                     className="w-full px-3 py-2 text-sm bg-white border border-slate-200 rounded-lg font-mono tabular-nums focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    ရေ ၁ ယူနစ်နှုန်း ({currency}) *
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    required
+                    value={waterRate}
+                    onChange={(e) => setWaterRate(Number(e.target.value))}
+                    className="w-full px-3 py-2 text-sm bg-sky-50/50 border border-sky-300 rounded-lg font-mono font-bold text-sky-900 tabular-nums focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
                   />
                 </div>
               </div>
 
               {/* Water Real-time feedback bar */}
-              <div className="mt-2 flex items-center justify-between px-3 py-2 rounded-lg bg-sky-50/60 border border-sky-100 text-xs">
-                <span className="text-slate-600">
+              <div className="mt-2.5 flex items-center justify-between px-3 py-2 rounded-lg bg-sky-50/70 border border-sky-200 text-xs">
+                <span className="text-slate-700">
                   သုံးစွဲယူနစ် ခြားနားချက်:{' '}
-                  <strong className="font-mono text-slate-900">{waterUnitsUsed}</strong> units
+                  <strong className="font-mono text-slate-900 font-bold">{waterUnitsUsed}</strong> units
                 </span>
-                <span className="font-semibold text-sky-800 font-mono tabular-nums">
+                <span className="font-semibold text-sky-900 font-mono tabular-nums">
                   {waterUnitsUsed} × {waterRate} = {waterTotalCost.toLocaleString()} {currency}
                 </span>
               </div>
@@ -754,35 +842,47 @@ ${activeReceipt.notes ? `မှတ်ချက်: ${activeReceipt.notes}` : ''}
               />
             </div>
 
-            {/* ၃။ SUBMIT BUTTON: 'Save Bill' ခလုတ် (Admin Only) */}
-            <div className="pt-4 border-t border-slate-100 flex items-center justify-between gap-3">
+            {/* ၃။ SUBMIT BUTTON: 'Save Bill' ခလုတ် (Admin Only) & Reset Button */}
+            <div className="pt-4 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-1.5 text-xs text-slate-500">
                 <Database className="w-3.5 h-3.5 text-indigo-500" />
                 <span>Save to Firestore: `invoices` (Status: Pending)</span>
               </div>
 
-              <button
-                type="submit"
-                disabled={!isMeterValid || !currentRoom || isSavingToFirestore}
-                className={`inline-flex items-center gap-2 px-6 py-2.5 text-sm font-semibold rounded-lg shadow-sm transition-colors ${
-                  isAdmin
-                    ? 'text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed'
-                    : 'text-indigo-950 bg-indigo-100 hover:bg-indigo-200 border border-indigo-300'
-                }`}
-                title={isAdmin ? 'Save Bill to Firestore' : 'အိမ်ရှင် (Admin) သာ ဘေလ်သိမ်းဆည်းခွင့်ရှိပါသည်'}
-              >
-                {isSavingToFirestore ? (
-                  <>
-                    <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
-                    <span>Saving to Firestore...</span>
-                  </>
-                ) : (
-                  <>
-                    {isAdmin ? <CheckCircle2 className="w-4 h-4" /> : <Lock className="w-4 h-4 text-indigo-700" />}
-                    <span>Save Bill (ဘေလ်သိမ်းဆည်းမည်)</span>
-                  </>
-                )}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={resetFormToOriginal}
+                  className="inline-flex items-center gap-1.5 px-4 py-2.5 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors shadow-2xs"
+                  title="မီတာအကွက်များကို မူလအတိုင်း ၀ သို့ ပြန်လည်သတ်မှတ်မည်"
+                >
+                  <RotateCcw className="w-3.5 h-3.5 text-slate-500" />
+                  <span>မူလအတိုင်း ပြန်ထားမည် (Reset)</span>
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={!isMeterValid || !currentRoom || isSavingToFirestore}
+                  className={`inline-flex items-center gap-2 px-6 py-2.5 text-sm font-semibold rounded-lg shadow-sm transition-colors ${
+                    isAdmin
+                      ? 'text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed'
+                      : 'text-indigo-950 bg-indigo-100 hover:bg-indigo-200 border border-indigo-300'
+                  }`}
+                  title={isAdmin ? 'Save Bill to Firestore' : 'အိမ်ရှင် (Admin) သာ ဘေလ်သိမ်းဆည်းခွင့်ရှိပါသည်'}
+                >
+                  {isSavingToFirestore ? (
+                    <>
+                      <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                      <span>Saving to Firestore...</span>
+                    </>
+                  ) : (
+                    <>
+                      {isAdmin ? <CheckCircle2 className="w-4 h-4" /> : <Lock className="w-4 h-4 text-indigo-700" />}
+                      <span>Save Bill (ဘေလ်သိမ်းဆည်းမည်)</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </form>
         </div>
@@ -912,16 +1012,29 @@ ${activeReceipt.notes ? `မှတ်ချက်: ${activeReceipt.notes}` : ''}
       {/* ============================================================== */}
       {savedBills.length > 0 && (
         <section className="bg-white rounded-xl border border-slate-200/90 shadow-xs p-5 sm:p-6 space-y-4">
-          <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+          <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-100">
             <div className="flex items-center gap-2">
               <History className="w-5 h-5 text-indigo-600" />
               <h3 className="text-base font-bold text-slate-900">
                 သိမ်းဆည်းပြီးသော ဘေလ်များ (Saved Utility Bills History)
               </h3>
             </div>
-            <span className="text-xs text-slate-500 font-mono">
-              စုစုပေါင်း: {savedBills.length} ခု
-            </span>
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-slate-500 font-mono">
+                စုစုပေါင်း: {savedBills.length} ခု
+              </span>
+              {onClearAllBills && savedBills.length > 0 && isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => setShowClearAllConfirm(true)}
+                  className="px-2.5 py-1 text-xs font-semibold text-rose-600 hover:text-rose-700 hover:bg-rose-50 rounded-md border border-rose-200 flex items-center gap-1 transition-colors"
+                  title="ဘေလ်မှတ်တမ်းအားလုံးကို ရှင်းလင်းဖျက်ပစ်မည်"
+                >
+                  <Trash2 className="w-3.5 h-3.5 text-rose-500" />
+                  <span>ဘေလ်အားလုံး ဖျက်မည် (Clear All)</span>
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="overflow-x-auto">
@@ -937,7 +1050,7 @@ ${activeReceipt.notes ? `မှတ်ချက်: ${activeReceipt.notes}` : ''}
                   <th className="py-2.5 px-3 text-right">ဝန်ဆောင်ခ</th>
                   <th className="py-2.5 px-3 text-right">စုစုပေါင်း (Total)</th>
                   <th className="py-2.5 px-3 text-center">အခြေအနေ</th>
-                  <th className="py-2.5 px-3 text-right">လုပ်ဆောင်ချက်</th>
+                  <th className="py-2.5 px-3 text-right whitespace-nowrap min-w-[190px]">လုပ်ဆောင်ချက်</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -989,11 +1102,12 @@ ${activeReceipt.notes ? `မှတ်ချက်: ${activeReceipt.notes}` : ''}
                         <span>{b.status === 'paid' ? 'Paid (ပေးချေပြီး)' : 'Pending (မပေးရသေး)'}</span>
                       </button>
                     </td>
-                    <td className="py-3 px-3 text-right">
+                    <td className="py-3 px-3 text-right whitespace-nowrap">
                       <div className="flex items-center justify-end gap-1.5">
                         <button
+                          type="button"
                           onClick={() => setActiveReceipt(b)}
-                          className="px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-medium rounded transition-colors flex items-center gap-1"
+                          className="px-2 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-semibold rounded-md transition-colors flex items-center gap-1 border border-indigo-200 shadow-2xs"
                           title="Digital Receipt ကြည့်ရန်"
                         >
                           <FileText className="w-3.5 h-3.5" />
@@ -1001,19 +1115,19 @@ ${activeReceipt.notes ? `မှတ်ချက်: ${activeReceipt.notes}` : ''}
                         </button>
                         {onDeleteBill && (
                           <button
+                            type="button"
                             onClick={() => {
                               if (!isAdmin) {
                                 onRequestAdminLogin();
                                 return;
                               }
-                              if (confirm(`ဘေလ်အမှတ် #${b.roomNumber} အား ဖျက်မည်လား?`)) {
-                                onDeleteBill(b.id);
-                              }
+                              setBillToDelete(b);
                             }}
-                            className="p-1 text-slate-400 hover:text-rose-600 rounded transition-colors"
-                            title={isAdmin ? "ဖျက်ရန်" : "အိမ်ရှင် (Admin) သာ ဖျက်ခွင့်ရှိပါသည်"}
+                            className="px-2 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold rounded-md transition-colors flex items-center gap-1 border border-rose-200 shadow-2xs"
+                            title="ဘေလ်အား စာရင်းမှ ဖျက်ရန်"
                           >
-                            {isAdmin ? <Trash2 className="w-3.5 h-3.5" /> : <Lock className="w-3 h-3 text-slate-400" />}
+                            <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+                            <span>Delete (ဖျက်မည်)</span>
                           </button>
                         )}
                       </div>
@@ -1247,19 +1361,155 @@ ${activeReceipt.notes ? `မှတ်ချက်: ${activeReceipt.notes}` : ''}
 
                 {/* Download Receipt File */}
                 <button
+                  type="button"
                   onClick={handleDownloadReceiptFile}
                   className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-100 shadow-2xs transition-colors"
                 >
                   <Download className="w-3.5 h-3.5 text-slate-600" />
                   <span>Download HTML Receipt</span>
                 </button>
+
+                {/* Delete button inside Receipt Modal */}
+                {onDeleteBill && isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => setBillToDelete(activeReceipt)}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-200 rounded-lg hover:bg-rose-100 shadow-2xs transition-colors"
+                    title="ဤဘေလ်အား စာရင်းမှ ဖျက်ပစ်မည်"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+                    <span>ဘေလ်ဖျက်မည် (Delete)</span>
+                  </button>
+                )}
               </div>
 
               <button
+                type="button"
                 onClick={() => setActiveReceipt(null)}
                 className="px-5 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-xs transition-colors"
               >
                 ပိတ်မည် (Done)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================== */}
+      {/* DELETE SINGLE BILL CONFIRMATION MODAL */}
+      {/* ============================================================== */}
+      {billToDelete && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 space-y-4 border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center gap-3">
+              <div className="p-3 bg-rose-100 rounded-full text-rose-600">
+                <Trash2 className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
+                  ဘေလ်မှတ်တမ်းအား ဖျက်မည်လား?
+                </h3>
+                <p className="text-xs text-slate-500 font-mono">
+                  အခန်း #{billToDelete.roomNumber} ({billToDelete.billMonth})
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-1 text-xs">
+              <div className="flex justify-between">
+                <span className="text-slate-500">အခန်းငှားသူ:</span>
+                <span className="font-semibold text-slate-800">{billToDelete.tenantName || 'အမည်မရှိ'}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">စုစုပေါင်း ကျသင့်ငွေ:</span>
+                <span className="font-bold text-rose-600 font-mono">
+                  {billToDelete.grandTotal.toLocaleString()} {billToDelete.currency}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">အခြေအနေ:</span>
+                <span className="font-semibold">{billToDelete.status === 'paid' ? 'ပေးချေပြီး (Paid)' : 'မပေးရသေး (Pending)'}</span>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-500">
+              ဤဘေလ်အား Cloud Firestore Database နှင့် စာရင်းထဲမှ လုံးဝ အပြီးတိုင် ဖျက်ထုတ်ပါမည်။
+            </p>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setBillToDelete(null)}
+                className="px-4 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
+              >
+                မဖျက်တော့ပါ (Cancel)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (onDeleteBill) {
+                    onDeleteBill(billToDelete.id);
+                  }
+                  if (activeReceipt?.id === billToDelete.id) {
+                    setActiveReceipt(null);
+                  }
+                  setBillToDelete(null);
+                }}
+                className="px-4 py-2 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-lg shadow-xs transition-colors flex items-center gap-1.5"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>သေချာပါသည်၊ ဖျက်မည်</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================== */}
+      {/* CLEAR ALL BILLS CONFIRMATION MODAL */}
+      {/* ============================================================== */}
+      {showClearAllConfirm && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 space-y-4 border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center gap-3">
+              <div className="p-3 bg-rose-100 rounded-full text-rose-600">
+                <Trash2 className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
+                  ဘေလ်မှတ်တမ်း အားလုံးကို ဖျက်မည်လား?
+                </h3>
+                <p className="text-xs text-slate-500 font-mono">
+                  စုစုပေါင်း ဘေလ် {savedBills.length} ခုလုံး
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-rose-600 font-medium bg-rose-50 p-3 rounded-lg border border-rose-100">
+              သတိပြုရန်: စာရင်းတွင်ရှိသော ဘေလ်မှတ်တမ်းအားလုံး ({savedBills.length} ခု) ကို Cloud Firestore နှင့် LocalStorage မှ လုံးဝ အပြီးတိုင် ရှင်းလင်းဖျက်ထုတ်ပါမည်။
+            </p>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowClearAllConfirm(false)}
+                className="px-4 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
+              >
+                မဖျက်တော့ပါ (Cancel)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (onClearAllBills) {
+                    onClearAllBills();
+                  }
+                  setActiveReceipt(null);
+                  setShowClearAllConfirm(false);
+                }}
+                className="px-4 py-2 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-lg shadow-xs transition-colors flex items-center gap-1.5"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>အားလုံး ဖျက်မည် (Clear All)</span>
               </button>
             </div>
           </div>
