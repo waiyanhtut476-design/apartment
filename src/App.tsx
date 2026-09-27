@@ -1,0 +1,688 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState, useEffect } from 'react';
+import {
+  Building2,
+  RotateCcw,
+  Calculator,
+  Receipt,
+  CheckCircle,
+  Plus,
+  ShieldCheck,
+  Lock,
+  LogOut,
+  UserCheck,
+  AlertTriangle
+} from 'lucide-react';
+import { Room, RoomStatusType, UtilityBill, AdminUser } from './types';
+import { INITIAL_ROOMS } from './data/initialRooms';
+import { RoomStatus } from './components/RoomStatus';
+import { BillCalculator } from './components/BillCalculator';
+import { AdminLoginModal } from './components/AdminLoginModal';
+
+const STORAGE_KEY = 'apartment_management_rooms_v1';
+const BILLS_STORAGE_KEY = 'apartment_utility_bills_v1';
+const ADMIN_STORAGE_KEY = 'apartment_admin_user_v1';
+const DESIGNATED_ADMIN_EMAIL = 'waiyanhtut476@gmail.com';
+
+const INITIAL_BILLS: UtilityBill[] = [
+  {
+    id: 'bill-1',
+    roomId: 'room-101',
+    roomNumber: '101',
+    tenantName: 'ကိုအောင်ကျော်စိုး (Ko Aung Kyaw Soe)',
+    billMonth: '2026-09',
+    createdAt: '2026-09-20T10:00:00.000Z',
+    roomRent: 4500,
+    electricPrev: 1200,
+    electricCurrent: 1260,
+    electricUnits: 60,
+    electricRate: 35,
+    electricTotal: 2100,
+    waterPrev: 280,
+    waterCurrent: 295,
+    waterUnits: 15,
+    waterRate: 18,
+    waterTotal: 270,
+    commonFee: 200,
+    grandTotal: 7070,
+    currency: 'Baht',
+    status: 'paid',
+    notes: 'Paid via K-Bank Mobile transfer.'
+  },
+  {
+    id: 'bill-2',
+    roomId: 'room-103',
+    roomNumber: '103',
+    tenantName: 'မသီတာထွေး (Ma Thidar Htwe)',
+    billMonth: '2026-09',
+    createdAt: '2026-09-24T14:30:00.000Z',
+    roomRent: 4500,
+    electricPrev: 950,
+    electricCurrent: 1025,
+    electricUnits: 75,
+    electricRate: 35,
+    electricTotal: 2625,
+    waterPrev: 190,
+    waterCurrent: 208,
+    waterUnits: 18,
+    waterRate: 18,
+    waterTotal: 324,
+    commonFee: 200,
+    grandTotal: 7649,
+    currency: 'Baht',
+    status: 'unpaid',
+    notes: 'Pending payment notification sent.'
+  }
+];
+
+export default function App() {
+  // Admin authentication state (Defaults to designated landlord waiyanhtut476@gmail.com)
+  const [adminUser, setAdminUser] = useState<AdminUser | null>(() => {
+    try {
+      const saved = localStorage.getItem(ADMIN_STORAGE_KEY);
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch {
+      // Fallback
+    }
+    // Default landlord session pre-authenticated
+    return {
+      email: DESIGNATED_ADMIN_EMAIL,
+      name: 'အိမ်ရှင် (Landlord Admin)',
+      role: 'admin',
+      isAuthenticated: true,
+      loginTime: new Date().toISOString(),
+    };
+  });
+
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
+
+  // Load rooms from localStorage or initial dummy data
+  const [rooms, setRooms] = useState<Room[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch {
+      // Fallback
+    }
+    return INITIAL_ROOMS;
+  });
+
+  // Load saved bills
+  const [savedBills, setSavedBills] = useState<UtilityBill[]>(() => {
+    try {
+      const saved = localStorage.getItem(BILLS_STORAGE_KEY);
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch {
+      // Fallback
+    }
+    return INITIAL_BILLS;
+  });
+
+  const [activeTab, setActiveTab] = useState<'rooms' | 'calculator' | 'revenue' | 'maintenance'>('rooms');
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const isAdmin = Boolean(adminUser && adminUser.isAuthenticated);
+
+  // Sync to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(rooms));
+    } catch (e) {
+      console.error('Failed to save rooms to localStorage', e);
+    }
+  }, [rooms]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(BILLS_STORAGE_KEY, JSON.stringify(savedBills));
+    } catch (e) {
+      console.error('Failed to save bills to localStorage', e);
+    }
+  }, [savedBills]);
+
+  useEffect(() => {
+    try {
+      if (adminUser) {
+        localStorage.setItem(ADMIN_STORAGE_KEY, JSON.stringify(adminUser));
+      } else {
+        localStorage.removeItem(ADMIN_STORAGE_KEY);
+      }
+    } catch (e) {
+      console.error('Failed to save admin session', e);
+    }
+  }, [adminUser]);
+
+  // Show temporary toast
+  const showToast = (message: string) => {
+    setToastMessage(message);
+    setTimeout(() => {
+      setToastMessage(null);
+    }, 3500);
+  };
+
+  const handleLoginSuccess = (user: AdminUser) => {
+    setAdminUser(user);
+    showToast(`အိမ်ရှင် Admin (${user.email}) အဖြစ် အောင်မြင်စွာ Login ဝင်ပြီးပါပြီ။`);
+  };
+
+  const handleLogout = () => {
+    setAdminUser(null);
+    showToast('အိမ်ရှင် အကောင့်မှ ထွက်ခွာပြီးပါပြီ (Guest Read-Only Mode)။');
+  };
+
+  // Add Room
+  const handleAddRoom = (newRoomData: Omit<Room, 'id'>) => {
+    const newRoom: Room = {
+      ...newRoomData,
+      id: `room-${Date.now()}`,
+    };
+    setRooms((prev) => [newRoom, ...prev]);
+    showToast(`အခန်းအမှတ် ${newRoom.roomNumber} အသစ်ကို အောင်မြင်စွာ ထည့်သွင်းပြီးပါပြီ။`);
+  };
+
+  // Quick Status Update
+  const handleUpdateStatus = (roomId: string, newStatus: RoomStatusType, tenantName?: string | null) => {
+    setRooms((prev) =>
+      prev.map((room) => {
+        if (room.id === roomId) {
+          return {
+            ...room,
+            status: newStatus,
+            tenantName: newStatus === 'available' ? null : tenantName !== undefined ? tenantName : room.tenantName,
+            tenantPhone: newStatus === 'available' ? undefined : room.tenantPhone,
+          };
+        }
+        return room;
+      })
+    );
+    const targetRoom = rooms.find((r) => r.id === roomId);
+    showToast(`အခန်း ${targetRoom?.roomNumber || ''} အခြေအနေ ပြောင်းလဲပြီးပါပြီ (${newStatus})`);
+  };
+
+  // Update full room details
+  const handleUpdateRoom = (updatedRoom: Room) => {
+    setRooms((prev) =>
+      prev.map((room) => (room.id === updatedRoom.id ? updatedRoom : room))
+    );
+    showToast(`အခန်း ${updatedRoom.roomNumber} အချက်အလက်များ သိမ်းဆည်းပြီးပါပြီ။`);
+  };
+
+  // Save Utility Bill
+  const handleSaveBill = (newBill: UtilityBill) => {
+    setSavedBills((prev) => [newBill, ...prev]);
+    showToast(`အခန်း ${newBill.roomNumber} အတွက် ဘေလ် (${newBill.grandTotal.toLocaleString()} ${newBill.currency}) ကို သိမ်းဆည်းပြီးပါပြီ။`);
+  };
+
+  // Update Bill Paid Status
+  const handleUpdateBillStatus = (billId: string, status: 'paid' | 'unpaid') => {
+    setSavedBills((prev) =>
+      prev.map((b) => (b.id === billId ? { ...b, status } : b))
+    );
+    showToast(`ဘေလ်အခြေအနေ ပြောင်းလဲပြီးပါပြီ (${status === 'paid' ? 'Paid' : 'Unpaid'})`);
+  };
+
+  // Delete Bill
+  const handleDeleteBill = (billId: string) => {
+    setSavedBills((prev) => prev.filter((b) => b.id !== billId));
+    showToast('ဘေလ်အား စာရင်းမှ ဖျက်ပြီးပါပြီ။');
+  };
+
+  // Reset demo data
+  const handleResetData = () => {
+    if (!isAdmin) {
+      setIsLoginModalOpen(true);
+      return;
+    }
+    if (confirm('နမူနာ အချက်အလက်များအား မူလအတိုင်း ပြန်လည်ထားရှိမည်လား?')) {
+      setRooms(INITIAL_ROOMS);
+      setSavedBills(INITIAL_BILLS);
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(BILLS_STORAGE_KEY);
+      showToast('မူလ အချက်အလက်များ ပြန်လည်ထည့်သွင်းပြီးပါပြီ။');
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans">
+      {/* ============================================================== */}
+      {/* TOP BAR CONTRACT: Zone 1 (Brand) - Zone 2 (Nav) - Zone 3 (Action) */}
+      {/* ============================================================== */}
+      <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-200/90 shadow-2xs">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
+          {/* Zone 1: Single text element wordmark */}
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white shadow-xs">
+              <Building2 className="w-5 h-5" />
+            </div>
+            <a href="/" className="text-base sm:text-lg font-bold tracking-tight text-slate-900">
+              SKYLINE RESIDENCE
+            </a>
+          </div>
+
+          {/* Zone 2: Clean text navigation links */}
+          <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-600">
+            <button
+              onClick={() => setActiveTab('rooms')}
+              className={`pb-1 transition-colors relative ${
+                activeTab === 'rooms'
+                  ? 'text-indigo-600 font-semibold border-b-2 border-indigo-600'
+                  : 'hover:text-slate-900'
+              }`}
+            >
+              အခန်းများ အခြေအနေ (Room Status)
+            </button>
+            <button
+              onClick={() => setActiveTab('calculator')}
+              className={`pb-1 transition-colors relative flex items-center gap-1.5 ${
+                activeTab === 'calculator'
+                  ? 'text-indigo-600 font-semibold border-b-2 border-indigo-600'
+                  : 'hover:text-slate-900'
+              }`}
+            >
+              <Calculator className="w-4 h-4" />
+              <span>Bill Calculator (မီတာ/ဘေလ်တွက်ချက်ရန်)</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('revenue')}
+              className={`pb-1 transition-colors relative ${
+                activeTab === 'revenue'
+                  ? 'text-indigo-600 font-semibold border-b-2 border-indigo-600'
+                  : 'hover:text-slate-900'
+              }`}
+            >
+              လစဉ်ငှားခ စာရင်းချုပ် (Revenue)
+            </button>
+            <button
+              onClick={() => setActiveTab('maintenance')}
+              className={`pb-1 transition-colors relative ${
+                activeTab === 'maintenance'
+                  ? 'text-indigo-600 font-semibold border-b-2 border-indigo-600'
+                  : 'hover:text-slate-900'
+              }`}
+            >
+              ပြုပြင်ထိန်းသိမ်းမှု (Maintenance)
+            </button>
+          </nav>
+
+          {/* Zone 3: Admin Auth Status & Controls */}
+          <div className="flex items-center gap-2">
+            {isAdmin ? (
+              <div className="flex items-center gap-2">
+                <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200/90 rounded-lg">
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  <span className="truncate max-w-[170px]" title={adminUser?.email}>
+                    အိမ်ရှင် Admin ({adminUser?.email?.split('@')[0]})
+                  </span>
+                </div>
+
+                <button
+                  onClick={handleLogout}
+                  className="px-2.5 py-1 text-xs font-medium text-slate-600 hover:text-rose-600 hover:bg-rose-50 border border-slate-200 rounded-lg transition-colors flex items-center gap-1"
+                  title="အိမ်ရှင် အကောင့်မှ ထွက်ပြီး Guest Mode ပြောင်းမည်"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Logout</span>
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setIsLoginModalOpen(true)}
+                className="px-3.5 py-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-xs transition-colors flex items-center gap-1.5 animate-pulse"
+              >
+                <Lock className="w-3.5 h-3.5" />
+                <span>အိမ်ရှင် Login (Admin)</span>
+              </button>
+            )}
+
+            <button
+              onClick={handleResetData}
+              title="Reset initial sample data"
+              className="px-2.5 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-800 bg-slate-100 hover:bg-slate-200/80 rounded-lg transition-colors flex items-center gap-1"
+            >
+              <RotateCcw className="w-3 h-3 text-slate-400" />
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* Guest Mode Warning Banner (if not logged in) */}
+      {!isAdmin && (
+        <div className="bg-amber-500 text-white px-4 py-2.5 shadow-xs border-b border-amber-600/40">
+          <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2 text-center sm:text-left">
+              <Lock className="w-4 h-4 text-amber-100 shrink-0" />
+              <span>
+                <strong>သတိပြုရန်:</strong> လက်ရှိတွင် ဧည့်သည် (Read-Only Mode) ဖြင့် ကြည့်ရှုနေပါသည်။ အခန်းအသစ်ထည့်ခြင်း၊ Check-in/Check-out ပြုလုပ်ခြင်းနှင့် ဘေလ်သိမ်းဆည်းခြင်းများကို <strong>အိမ်ရှင် (Admin) တစ်ဦးတည်းသာ</strong> ပြုလုပ်ခွင့်ရှိပါသည်။
+              </span>
+            </div>
+            <button
+              onClick={() => setIsLoginModalOpen(true)}
+              className="px-3 py-1 bg-white text-amber-900 font-bold rounded-md hover:bg-amber-50 transition-colors shadow-2xs whitespace-nowrap"
+            >
+              အိမ်ရှင်အဖြစ် Login ဝင်မည် →
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================== */}
+      {/* MAIN VIEWPORT CONTAINER */}
+      {/* ============================================================== */}
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
+        {/* Mobile Navigation Pills */}
+        <div className="md:hidden flex items-center gap-2 overflow-x-auto pb-3 mb-4 text-xs font-medium">
+          <button
+            onClick={() => setActiveTab('calculator')}
+            className={`px-3 py-1.5 rounded-lg whitespace-nowrap ${
+              activeTab === 'calculator'
+                ? 'bg-indigo-600 text-white font-semibold'
+                : 'bg-white text-slate-700 border border-slate-200'
+            }`}
+          >
+            Bill Calculator
+          </button>
+          <button
+            onClick={() => setActiveTab('rooms')}
+            className={`px-3 py-1.5 rounded-lg whitespace-nowrap ${
+              activeTab === 'rooms'
+                ? 'bg-indigo-600 text-white font-semibold'
+                : 'bg-white text-slate-700 border border-slate-200'
+            }`}
+          >
+            Room Status
+          </button>
+          <button
+            onClick={() => setActiveTab('revenue')}
+            className={`px-3 py-1.5 rounded-lg whitespace-nowrap ${
+              activeTab === 'revenue'
+                ? 'bg-indigo-600 text-white font-semibold'
+                : 'bg-white text-slate-700 border border-slate-200'
+            }`}
+          >
+            Revenue
+          </button>
+          <button
+            onClick={() => setActiveTab('maintenance')}
+            className={`px-3 py-1.5 rounded-lg whitespace-nowrap ${
+              activeTab === 'maintenance'
+                ? 'bg-indigo-600 text-white font-semibold'
+                : 'bg-white text-slate-700 border border-slate-200'
+            }`}
+          >
+            Maintenance
+          </button>
+        </div>
+
+        {/* Tab 0: Bill Calculator Component */}
+        {activeTab === 'calculator' && (
+          <BillCalculator
+            rooms={rooms}
+            isAdmin={isAdmin}
+            onRequestAdminLogin={() => setIsLoginModalOpen(true)}
+            onSaveBill={handleSaveBill}
+            savedBills={savedBills}
+            onUpdateBillStatus={handleUpdateBillStatus}
+            onDeleteBill={handleDeleteBill}
+          />
+        )}
+
+        {/* Tab 1: Room Status Component */}
+        {activeTab === 'rooms' && (
+          <RoomStatus
+            rooms={rooms}
+            isAdmin={isAdmin}
+            onRequestAdminLogin={() => setIsLoginModalOpen(true)}
+            onAddRoom={handleAddRoom}
+            onUpdateStatus={handleUpdateStatus}
+            onUpdateRoom={handleUpdateRoom}
+          />
+        )}
+
+        {/* Tab 2: Revenue Overview */}
+        {activeTab === 'revenue' && (
+          <div className="bg-white rounded-xl border border-slate-200/90 p-6 shadow-xs space-y-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">
+                  လစဉ်ငှားခ ဘဏ္ဍာရေး စာရင်းချုပ် (Monthly Rental Revenue)
+                </h2>
+                <p className="text-xs text-slate-500 mt-1">
+                  ငှားရမ်းထားသော အခန်းများနှင့် ရရှိနိုင်မည့် အလားအလာရှိသော ဝင်ငွေ အခြေအနေ
+                </p>
+              </div>
+              <button
+                onClick={() => setActiveTab('rooms')}
+                className="text-xs text-indigo-600 hover:text-indigo-800 font-medium"
+              >
+                ← အခန်းစာရင်းသို့ ပြန်သွားရန်
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+              <div className="p-5 rounded-xl bg-slate-50 border border-slate-200/80">
+                <span className="text-xs font-semibold text-slate-500 uppercase">
+                  ခန့်မှန်းခြေ စုစုပေါင်း အပြည့်အဝ ဝင်ငွေ (Potential)
+                </span>
+                <div className="mt-2 text-2xl font-bold font-mono text-slate-900 tabular-nums">
+                  {rooms.reduce((s, r) => s + r.monthlyRent, 0).toLocaleString()} MMK
+                </div>
+                <p className="text-xs text-slate-500 mt-1">အခန်းအားလုံး ငှားရမ်းနိုင်ပါက</p>
+              </div>
+
+              <div className="p-5 rounded-xl bg-emerald-50/70 border border-emerald-200">
+                <span className="text-xs font-semibold text-emerald-800 uppercase">
+                  လက်ရှိ ရရှိနေသော လစဉ်ငှားခ (Active Rent)
+                </span>
+                <div className="mt-2 text-2xl font-bold font-mono text-emerald-700 tabular-nums">
+                  {rooms
+                    .filter((r) => r.status === 'occupied')
+                    .reduce((s, r) => s + r.monthlyRent, 0)
+                    .toLocaleString()}{' '}
+                  MMK
+                </div>
+                <p className="text-xs text-emerald-600 mt-1">
+                  {rooms.filter((r) => r.status === 'occupied').length} ခန်းမှ ရရှိသော ပမာဏ
+                </p>
+              </div>
+
+              <div className="p-5 rounded-xl bg-slate-50 border border-slate-200/80">
+                <span className="text-xs font-semibold text-slate-500 uppercase">
+                  လစ်လပ်နေမှုကြောင့် မရရှိသေးသော ငွေ (Vacancy Loss)
+                </span>
+                <div className="mt-2 text-2xl font-bold font-mono text-rose-600 tabular-nums">
+                  {rooms
+                    .filter((r) => r.status !== 'occupied')
+                    .reduce((s, r) => s + r.monthlyRent, 0)
+                    .toLocaleString()}{' '}
+                  MMK
+                </div>
+                <p className="text-xs text-slate-500 mt-1">
+                  {rooms.filter((r) => r.status !== 'occupied').length} ခန်း လွတ်/ပြုပြင်ဆဲ
+                </p>
+              </div>
+            </div>
+
+            {/* Breakdown table */}
+            <div className="border border-slate-200 rounded-lg overflow-hidden mt-4">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold">
+                  <tr>
+                    <th className="py-3 px-4">အခန်းနံပါတ်</th>
+                    <th className="py-3 px-4">အမျိုးအစား</th>
+                    <th className="py-3 px-4">ငှားသူအမည်</th>
+                    <th className="py-3 px-4">အခြေအနေ</th>
+                    <th className="py-3 px-4 text-right">လစဉ်ငှားခ</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {rooms.map((r) => (
+                    <tr key={r.id} className="hover:bg-slate-50/60">
+                      <td className="py-2.5 px-4 font-mono font-bold text-slate-800">
+                        {r.roomNumber}
+                      </td>
+                      <td className="py-2.5 px-4 text-slate-600">{r.roomType}</td>
+                      <td className="py-2.5 px-4 font-medium text-slate-800">
+                        {r.tenantName || '-'}
+                      </td>
+                      <td className="py-2.5 px-4">
+                        <span
+                          className={`inline-block px-2 py-0.5 rounded text-[11px] font-semibold ${
+                            r.status === 'occupied'
+                              ? 'bg-rose-50 text-rose-700'
+                              : r.status === 'available'
+                              ? 'bg-emerald-50 text-emerald-700'
+                              : 'bg-amber-50 text-amber-700'
+                          }`}
+                        >
+                          {r.status}
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-4 text-right font-mono font-semibold text-slate-900 tabular-nums">
+                        {r.monthlyRent.toLocaleString()} Ks
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Tab 3: Maintenance Overview */}
+        {activeTab === 'maintenance' && (
+          <div className="bg-white rounded-xl border border-slate-200/90 p-6 shadow-xs space-y-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">
+                  ပြုပြင်ထိန်းသိမ်းမှု လိုအပ်သော အခန်းများ (Maintenance Schedule)
+                </h2>
+                <p className="text-xs text-slate-500 mt-1">
+                  မီးဝါ (Maintenance) အခြေအနေရှိသော အခန်းများစာရင်း
+                </p>
+              </div>
+              <button
+                onClick={() => setActiveTab('rooms')}
+                className="text-xs text-indigo-600 hover:text-indigo-800 font-medium"
+              >
+                ← အခန်းစာရင်းသို့ ပြန်သွားရန်
+              </button>
+            </div>
+
+            {rooms.filter((r) => r.status === 'maintenance').length === 0 ? (
+              <div className="p-8 text-center border border-dashed border-slate-200 rounded-xl">
+                <CheckCircle className="w-10 h-10 text-emerald-500 mx-auto mb-2" />
+                <h4 className="text-sm font-semibold text-slate-800">
+                  လတ်တလော ပြုပြင်ရန်လိုအပ်သော အခန်း မရှိပါ
+                </h4>
+                <p className="text-xs text-slate-500 mt-1">အခန်းအားလုံး ကောင်းမွန်သောအခြေအနေတွင် ရှိပါသည်</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {rooms
+                  .filter((r) => r.status === 'maintenance')
+                  .map((room) => (
+                    <div
+                      key={room.id}
+                      className="p-4 rounded-xl border border-amber-200 bg-amber-50/30 flex flex-col justify-between"
+                    >
+                      <div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-lg font-bold font-mono text-slate-900">
+                            အခန်း {room.roomNumber}
+                          </span>
+                          <span className="px-2 py-0.5 rounded text-xs font-semibold bg-amber-100 text-amber-800">
+                            Floor {room.floor} · {room.roomType}
+                          </span>
+                        </div>
+                        <div className="mt-2 text-xs text-slate-600">
+                          <strong>ပြုပြင်မှု အသေးစိတ်:</strong>{' '}
+                          {room.notes || 'အသေးစိတ် မဖော်ပြထားပါ'}
+                        </div>
+                      </div>
+
+                      <div className="mt-4 pt-3 border-t border-amber-100 flex items-center justify-between">
+                        <span className="text-xs text-slate-500">
+                          လစဉ်ငှားခ: {room.monthlyRent.toLocaleString()} Ks
+                        </span>
+                        <button
+                          onClick={() => {
+                            if (!isAdmin) {
+                              setIsLoginModalOpen(true);
+                              return;
+                            }
+                            handleUpdateStatus(room.id, 'available', null);
+                          }}
+                          className={`px-3 py-1.5 text-xs font-semibold rounded-lg shadow-xs transition-colors flex items-center gap-1 ${
+                            isAdmin
+                              ? 'text-white bg-emerald-600 hover:bg-emerald-700'
+                              : 'text-emerald-950 bg-emerald-100 hover:bg-emerald-200 border border-emerald-300'
+                          }`}
+                          title={isAdmin ? 'Mark as Available' : 'အိမ်ရှင် (Admin) သာ ပြင်ဆင်ခွင့်ရှိပါသည်'}
+                        >
+                          {!isAdmin && <Lock className="w-3 h-3 text-emerald-700" />}
+                          <span>ပြုပြင်ပြီးစီး (Mark as Available)</span>
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+        )}
+      </main>
+
+      {/* ============================================================== */}
+      {/* TOAST FEEDBACK NOTIFICATION */}
+      {/* ============================================================== */}
+      {toastMessage && (
+        <div className="fixed bottom-5 right-5 z-50 bg-slate-900 text-white px-4 py-3 rounded-xl shadow-lg border border-slate-700 text-xs flex items-center gap-2 animate-in fade-in slide-in-from-bottom-3 duration-200">
+          <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+          <span>{toastMessage}</span>
+        </div>
+      )}
+
+      {/* ============================================================== */}
+      {/* QUIET FOOTER */}
+      {/* ============================================================== */}
+      <footer className="border-t border-slate-200 bg-white py-4 mt-auto">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between text-xs text-slate-500 gap-2">
+          <p>© {new Date().getFullYear()} Skyline Residence Apartment Management System.</p>
+          <div className="flex items-center gap-4">
+            <span className="inline-flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+              <span>Available (မီးစိမ်း)</span>
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-rose-500"></span>
+              <span>Occupied (မီးနီ)</span>
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+              <span>Maintenance (မီးဝါ)</span>
+            </span>
+          </div>
+        </div>
+      </footer>
+
+      {/* ============================================================== */}
+      {/* ADMIN LOGIN MODAL */}
+      {/* ============================================================== */}
+      <AdminLoginModal
+        isOpen={isLoginModalOpen}
+        onClose={() => setIsLoginModalOpen(false)}
+        onLoginSuccess={handleLoginSuccess}
+        designatedEmail={DESIGNATED_ADMIN_EMAIL}
+      />
+    </div>
+  );
+}
